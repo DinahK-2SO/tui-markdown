@@ -4,6 +4,11 @@
 //! [`Options`] value for custom [`StyleSheet`] styles and symbols, image fallback mode, and, when
 //! the `highlight-code` feature is enabled, syntax-highlighting theme.
 //!
+//! [`from_str_with_options_and_source_map`] additionally reports byte ranges for rendered
+//! top-level blocks and their corresponding rendered-line ranges. This is useful when an
+//! append-only Markdown stream wants to retain completed blocks and re-render only its mutable
+//! tail.
+//!
 //! The returned text may borrow from the Markdown input. It contains terminal text and styles only;
 //! image syntax produces a configurable text fallback and does not read or render image resources.
 //!
@@ -57,5 +62,8 @@ mod style_sheet;
 #[cfg(feature = "highlight-code")]
 pub use crate::code_theme::{BuiltinCodeTheme, CodeTheme, CodeThemeLoadError};
 pub use crate::options::{ImageFallback, Options};
-pub use crate::renderer::{from_str, from_str_with_options};
+pub use crate::renderer::{
+    from_str, from_str_with_options, from_str_with_options_and_source_map, SourceMappedBlock,
+    SourceMappedText,
+};
 pub use crate::style_sheet::{AlertKind, DefaultStyleSheet, StyleSheet};

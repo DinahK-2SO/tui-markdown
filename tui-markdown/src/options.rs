@@ -39,7 +39,8 @@ pub enum ImageFallback {
     AltTextAndUrl,
 }
 
-/// Rendering options for [`crate::from_str_with_options`].
+/// Rendering options for [`crate::from_str_with_options`] and
+/// [`crate::from_str_with_options_and_source_map`].
 ///
 /// `S` is the style sheet consulted while Markdown events are rendered. [`Options::default`] uses
 /// [`DefaultStyleSheet`]. Use [`Options::new`] to supply another [`StyleSheet`].

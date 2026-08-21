@@ -32,9 +32,12 @@ mod image;
 mod link;
 mod list;
 mod math;
+mod source_map;
 mod table;
 #[cfg(test)]
 mod test_support;
+
+pub use source_map::{from_str_with_options_and_source_map, SourceMappedBlock, SourceMappedText};
 
 /// Render Markdown `input` into a [`Text`] using the default [`Options`].
 ///
@@ -73,24 +76,28 @@ pub fn from_str_with_options<'a, S>(input: &'a str, options: &Options<S>) -> Tex
 where
     S: StyleSheet,
 {
-    let mut parse_opts = ParseOptions::empty();
-    parse_opts.insert(ParseOptions::ENABLE_STRIKETHROUGH);
-    parse_opts.insert(ParseOptions::ENABLE_TASKLISTS);
-    parse_opts.insert(ParseOptions::ENABLE_HEADING_ATTRIBUTES);
-    parse_opts.insert(ParseOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
-    parse_opts.insert(ParseOptions::ENABLE_SUPERSCRIPT);
-    parse_opts.insert(ParseOptions::ENABLE_SUBSCRIPT);
-    parse_opts.insert(ParseOptions::ENABLE_MATH);
-    parse_opts.insert(ParseOptions::ENABLE_FOOTNOTES);
-    parse_opts.insert(ParseOptions::ENABLE_DEFINITION_LIST);
-    parse_opts.insert(ParseOptions::ENABLE_GFM);
-    parse_opts.insert(ParseOptions::ENABLE_TABLES);
-    let parser = Parser::new_ext(input, parse_opts);
+    let parser = Parser::new_ext(input, parse_options());
 
     let writer = TextWriter::new(parser, options.styles.clone(), options.image_fallback);
     #[cfg(feature = "highlight-code")]
     let writer = writer.with_code_theme(options.selected_code_theme());
     writer.run()
+}
+
+fn parse_options() -> ParseOptions {
+    let mut options = ParseOptions::empty();
+    options.insert(ParseOptions::ENABLE_STRIKETHROUGH);
+    options.insert(ParseOptions::ENABLE_TASKLISTS);
+    options.insert(ParseOptions::ENABLE_HEADING_ATTRIBUTES);
+    options.insert(ParseOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    options.insert(ParseOptions::ENABLE_SUPERSCRIPT);
+    options.insert(ParseOptions::ENABLE_SUBSCRIPT);
+    options.insert(ParseOptions::ENABLE_MATH);
+    options.insert(ParseOptions::ENABLE_FOOTNOTES);
+    options.insert(ParseOptions::ENABLE_DEFINITION_LIST);
+    options.insert(ParseOptions::ENABLE_GFM);
+    options.insert(ParseOptions::ENABLE_TABLES);
+    options
 }
 
 struct TextWriter<'a, 'theme, I, S: StyleSheet> {
@@ -521,5 +528,143 @@ mod tests {
                 Line::from("Body"),
             ])
         );
+    }
+
+    #[rstest]
+    fn source_mapped_render_matches_legacy_text(_with_tracing: DefaultGuard) {
+        let options = Options::default().image_fallback(ImageFallback::AltTextAndUrl);
+
+        for markdown in [
+            indoc! {r#"
+                # Heading {#title}
+
+                Paragraph with **strong**, *emphasis*, and [a link](https://example.com).
+
+                > Quoted text
+
+                - [x] completed
+                - pending with `code`
+
+                | Name | Value |
+                |:-----|------:|
+                | one  |     1 |
+
+                ```rust
+                fn main() {}
+                ```
+            "#},
+            indoc! {"
+                ---
+                title: Demo
+                ---
+
+                Term
+                : First definition
+
+                [^note]: Footnote text
+
+                Use the note.[^note]
+            "},
+            indoc! {r#"
+                ![**diagram**](diagram.png)
+
+                Inline math $x^2$ and display math:
+
+                $$y = mx + b$$
+
+                <div>raw html</div>
+
+                ---
+            "#},
+        ] {
+            let mapped = from_str_with_options_and_source_map(markdown, &options);
+
+            assert_eq!(mapped.text(), &from_str_with_options(markdown, &options));
+        }
+    }
+
+    #[rstest]
+    fn source_mapped_render_reports_top_level_ranges(_with_tracing: DefaultGuard) {
+        let markdown = "# Heading\n\nParagraph\n\n- one\n- two";
+        let options = Options::default();
+
+        let mapped = from_str_with_options_and_source_map(markdown, &options);
+
+        assert_eq!(mapped.blocks().len(), 3);
+        assert_eq!(mapped.blocks()[0].source_range(), 0..10);
+        assert_eq!(mapped.blocks()[0].line_range(), 0..1);
+        assert_eq!(mapped.blocks()[1].source_range(), 11..21);
+        assert_eq!(mapped.blocks()[1].line_range(), 2..3);
+        assert_eq!(mapped.blocks()[2].source_range(), 22..33);
+        assert_eq!(mapped.blocks()[2].line_range(), 4..6);
+        assert_eq!(mapped.last_top_level_block_start(), Some(22));
+    }
+
+    #[rstest]
+    fn source_mapped_render_detects_reference_definitions(_with_tracing: DefaultGuard) {
+        let markdown = "[docs]: https://example.com\n\nRead [docs].";
+        let options = Options::default();
+
+        let mapped = from_str_with_options_and_source_map(markdown, &options);
+
+        assert!(mapped.has_reference_definitions());
+        assert_eq!(mapped.blocks().len(), 1);
+        assert_eq!(mapped.last_top_level_block_start(), markdown.find("Read"));
+    }
+
+    #[rstest]
+    #[case("| A | B |\n|---|---|\n| 1 | 2 |")]
+    #[case("```rust\nfn main() {}\n```")]
+    #[case("<div>html</div>")]
+    #[case("---")]
+    fn source_mapped_single_block_covers_its_source(
+        _with_tracing: DefaultGuard,
+        #[case] markdown: &str,
+    ) {
+        let options = Options::default();
+
+        let mapped = from_str_with_options_and_source_map(markdown, &options);
+
+        assert_eq!(mapped.blocks().len(), 1, "{markdown:?}");
+        assert_eq!(mapped.blocks()[0].source_range(), 0..markdown.len());
+        assert_eq!(mapped.blocks()[0].line_range().start, 0);
+        assert!(mapped.blocks()[0].line_range().end <= mapped.text().lines.len());
+    }
+
+    #[rstest]
+    fn source_mapped_empty_input_has_no_blocks(_with_tracing: DefaultGuard) {
+        let options = Options::default();
+
+        let mapped = from_str_with_options_and_source_map("", &options);
+
+        assert_eq!(mapped.text(), &Text::default());
+        assert!(mapped.blocks().is_empty());
+        assert_eq!(mapped.last_top_level_block_start(), None);
+        assert!(!mapped.has_reference_definitions());
+    }
+
+    #[rstest]
+    fn source_mapped_ranges_are_utf8_byte_offsets(_with_tracing: DefaultGuard) {
+        let markdown = "# 标题\r\n\r\n👩‍💻 ready\r\n";
+        let options = Options::default();
+
+        let mapped = from_str_with_options_and_source_map(markdown, &options);
+
+        assert_eq!(mapped.blocks().len(), 2);
+        assert_eq!(mapped.last_top_level_block_start(), markdown.find('👩'));
+        let source_ranges = mapped
+            .blocks()
+            .iter()
+            .map(SourceMappedBlock::source_range)
+            .collect::<Vec<_>>();
+        assert!(source_ranges
+            .windows(2)
+            .all(|pair| pair[0].end <= pair[1].start));
+        assert_eq!(markdown[source_ranges[0].clone()].trim_end(), "# 标题");
+        assert_eq!(markdown[source_ranges[1].clone()].trim_end(), "👩‍💻 ready");
+        assert!(mapped.blocks().iter().all(|block| {
+            let range = block.line_range();
+            range.start <= range.end && range.end <= mapped.text().lines.len()
+        }));
     }
 }
